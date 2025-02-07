@@ -6,6 +6,9 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,6 +33,13 @@ type wrappedResp struct {
 	Data       interface{} `json:"data"`
 }
 
+func addrString(addr net.Addr) string {
+	if addr == nil {
+		return "unknown"
+	}
+	return addr.String()
+}
+
 // stores the result in the value pointed to by ret(must be a pointer)
 func apiRequestNegotiateV1(httpclient *http.Client, method string, endpoint string, headers http.Header, ret interface{}) error {
 	req, err := http.NewRequest(method, endpoint, nil)
@@ -41,6 +51,21 @@ func apiRequestNegotiateV1(httpclient *http.Client, method string, endpoint stri
 	}
 
 	req.Header.Add("Accept", "application/vnd.nsq; version=1.0")
+
+	var addrMutex sync.Mutex
+	var addrs []string
+
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			text := fmt.Sprintf("%q -> %q",
+				addrString(info.Conn.LocalAddr()),
+				addrString(info.Conn.RemoteAddr()))
+			addrMutex.Lock()
+			addrs = append(addrs, text)
+			addrMutex.Unlock()
+		},
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 
 	resp, err := httpclient.Do(req)
 	if err != nil {
@@ -54,7 +79,10 @@ func apiRequestNegotiateV1(httpclient *http.Client, method string, endpoint stri
 	}
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("got response %s %q", resp.Status, respBody)
+		addrMutex.Lock()
+		addrsString := strings.Join(addrs, ", ")
+		addrMutex.Unlock()
+		return fmt.Errorf("for (%s) got response %s %q", addrsString, resp.Status, respBody)
 	}
 
 	if len(respBody) == 0 {
