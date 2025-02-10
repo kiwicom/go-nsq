@@ -52,17 +52,38 @@ func apiRequestNegotiateV1(httpclient *http.Client, method string, endpoint stri
 
 	req.Header.Add("Accept", "application/vnd.nsq; version=1.0")
 
-	var addrMutex sync.Mutex
-	var addrs []string
+	var connInfoMutex sync.Mutex
+	var connInfos []string
+
+	appendInfo := func(text string) {
+		connInfoMutex.Lock()
+		defer connInfoMutex.Unlock()
+		connInfos = append(connInfos, text)
+	}
 
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
-			text := fmt.Sprintf("%q -> %q",
+			appendInfo(fmt.Sprintf("HTTP %q -> %q [reused=%v, wasIdle=%v, idleTime=%s]",
 				addrString(info.Conn.LocalAddr()),
-				addrString(info.Conn.RemoteAddr()))
-			addrMutex.Lock()
-			addrs = append(addrs, text)
-			addrMutex.Unlock()
+				addrString(info.Conn.RemoteAddr()),
+				info.Reused,
+				info.WasIdle,
+				info.IdleTime.String(),
+			))
+		},
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			appendInfo(fmt.Sprintf("DNS start %q", info.Host))
+		},
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			addrs := make([]string, len(info.Addrs))
+			for i, addr := range info.Addrs {
+				addrs[i] = addr.String()
+			}
+			var errorText string
+			if info.Err != nil {
+				errorText = fmt.Sprintf(" err=%q", info.Err.Error())
+			}
+			appendInfo(fmt.Sprintf("DNS done [%s]%s coalesced=%v", addrs, errorText, info.Coalesced))
 		},
 	}
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
@@ -79,9 +100,9 @@ func apiRequestNegotiateV1(httpclient *http.Client, method string, endpoint stri
 	}
 
 	if resp.StatusCode != 200 {
-		addrMutex.Lock()
-		addrsString := strings.Join(addrs, ", ")
-		addrMutex.Unlock()
+		connInfoMutex.Lock()
+		addrsString := strings.Join(connInfos, ", ")
+		connInfoMutex.Unlock()
 		return fmt.Errorf("for (%s) got response %s %q", addrsString, resp.Status, respBody)
 	}
 
