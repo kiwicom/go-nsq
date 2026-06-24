@@ -1045,7 +1045,11 @@ func (r *Consumer) redistributeRDY() {
 				r.updateRDY(c, 0)
 			}
 		}
-		possibleConns = append(possibleConns, c)
+		// Only RDY-0 connections are redistribution candidates; giving the
+		// freed slot to one that already has RDY would strand it indefinitely.
+		if c.RDY() == 0 {
+			possibleConns = append(possibleConns, c)
+		}
 	}
 
 	availableMaxInFlight := int64(maxInFlight) - atomic.LoadInt64(&r.totalRdyCount)
