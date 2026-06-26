@@ -345,9 +345,9 @@ func (r *Consumer) ChangeMaxInFlight(maxInFlight int) {
 
 	atomic.StoreInt32(&r.maxInFlight, int32(maxInFlight))
 
-	for _, c := range r.conns() {
-		r.maybeUpdateRDY(c)
-	}
+	// re-assert each connection's share of the new budget (lower-first, so an
+	// under-share connection is not refused by the ones already holding it)
+	r.rebalanceRDY()
 }
 
 // set lookupd http client
@@ -630,13 +630,8 @@ func (r *Consumer) ConnectToNSQD(addr string) error {
 	r.connections[addr] = conn
 	r.mtx.Unlock()
 
-	// pre-emptive signal to existing connections to lower their RDY count
-	for _, c := range r.conns() {
-		if c != conn {
-			r.maybeUpdateRDY(c)
-		}
-	}
-	r.maybeUpdateRDY(conn)
+	// give the newly added connection its fair share of RDY
+	r.rebalanceRDY()
 
 	return nil
 }
@@ -785,6 +780,9 @@ func (r *Consumer) onConnClose(c *Conn) {
 		}
 		return
 	}
+
+	// hand the freed budget to the remaining connections
+	r.rebalanceRDY()
 
 	r.mtx.RLock()
 	numLookupd := len(r.lookupdHTTPAddrs)
@@ -940,6 +938,29 @@ func (r *Consumer) maybeUpdateRDY(conn *Conn) {
 	r.log(LogLevelDebug, "(%s) sending RDY %d", conn, count)
 	if err := r.updateRDY(conn, count); err != nil {
 		r.log(LogLevelWarning, "(%s) error sending RDY %d: %v", conn, count, err)
+	}
+}
+
+// rebalanceRDY resets every connection to its fair share of MaxInFlight so a
+// connection added or freed by a roll (or a MaxInFlight change) gets its share
+// instead of being starved by the ones already holding the budget.
+func (r *Consumer) rebalanceRDY() {
+	if r.inBackoff() || r.inBackoffTimeout() {
+		return
+	}
+	count := r.perConnMaxInFlight()
+	conns := r.conns()
+	// lower over-share connections first to free budget, then raise the rest
+	// (updateRDY errors are ignored; it reschedules refused RDY-0 conns itself)
+	for _, c := range conns {
+		if c.RDY() > count {
+			_ = r.updateRDY(c, count)
+		}
+	}
+	for _, c := range conns {
+		if c.RDY() < count {
+			_ = r.updateRDY(c, count)
+		}
 	}
 }
 
