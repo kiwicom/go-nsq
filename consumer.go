@@ -943,7 +943,10 @@ func (r *Consumer) maybeUpdateRDY(conn *Conn) {
 
 // rebalanceRDY resets every connection to its fair share of MaxInFlight so a
 // connection added or freed by a roll (or a MaxInFlight change) gets its share
-// instead of being starved by the ones already holding the budget.
+// instead of being starved by the ones already holding the budget. It is called
+// on every connection-set change and periodically from rdyLoop, so a starved
+// connection recovers within one RDYRedistributeInterval regardless of whether
+// MaxInFlight ever changes again.
 func (r *Consumer) rebalanceRDY() {
 	if r.inBackoff() || r.inBackoffTimeout() {
 		return
@@ -971,6 +974,15 @@ func (r *Consumer) rdyLoop() {
 		select {
 		case <-redistributeTicker.C:
 			r.redistributeRDY()
+			// Re-assert fair shares every tick: RDY is otherwise only set on
+			// connect/close/ChangeMaxInFlight, so a connection rolled onto a
+			// consumer whose MaxInFlight stays constant would keep whatever
+			// (near-zero) RDY it got at connect and stay starved indefinitely.
+			// Skip when over-subscribed: there a fair share is < 1 RDY/conn and
+			// redistributeRDY (above) owns rotating the scarce budget instead.
+			if int64(len(r.conns())) <= int64(r.getMaxInFlight()) {
+				r.rebalanceRDY()
+			}
 		case <-r.exitChan:
 			goto exit
 		}
