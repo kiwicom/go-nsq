@@ -211,6 +211,10 @@ type ConnStat struct {
 	Address  string
 	RDY      int64
 	InFlight int64
+	// Closing is true while the connection is being torn down. A closing
+	// connection still counts toward totalRdyCount but updateRDY refuses to
+	// change its RDY, so its budget cannot be reclaimed until it is removed.
+	Closing bool
 }
 
 // ConnStats returns per-connection RDY and in-flight counts for every nsqd
@@ -225,6 +229,7 @@ func (r *Consumer) ConnStats() []ConnStat {
 			Address:  c.String(),
 			RDY:      c.RDY(),
 			InFlight: c.MessagesInFlight(),
+			Closing:  c.IsClosing(),
 		})
 	}
 	return stats
@@ -330,6 +335,14 @@ func (r *Consumer) IsStarved() bool {
 
 func (r *Consumer) getMaxInFlight() int32 {
 	return atomic.LoadInt32(&r.maxInFlight)
+}
+
+// TotalRDY returns the consumer's running total of RDY advertised across all
+// connections (the budget tracked against MaxInFlight). Comparing it to the sum
+// of per-connection RDY reveals budget leaked by connections that were removed
+// or are stuck closing without their RDY being reclaimed.
+func (r *Consumer) TotalRDY() int64 {
+	return atomic.LoadInt64(&r.totalRdyCount)
 }
 
 // ChangeMaxInFlight sets a new maximum number of messages this comsumer instance
