@@ -260,6 +260,12 @@ func (c *Conn) MaxRDY() int64 {
 	return c.maxRdyCount
 }
 
+// MessagesInFlight returns the number of messages currently in flight
+// (sent by nsqd over this connection, not yet finished or requeued).
+func (c *Conn) MessagesInFlight() int64 {
+	return atomic.LoadInt64(&c.messagesInFlight)
+}
+
 // LastRdyTime returns the time of the last non-zero RDY
 // update for this connection
 func (c *Conn) LastRdyTime() time.Time {

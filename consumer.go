@@ -205,6 +205,36 @@ func (r *Consumer) Stats() *ConsumerStats {
 	}
 }
 
+// ConnStat is a point-in-time view of a single nsqd connection's RDY and
+// in-flight counts, keyed by the nsqd address.
+type ConnStat struct {
+	Address  string
+	RDY      int64
+	InFlight int64
+	// Closing is true while the connection is being torn down. A closing
+	// connection still counts toward totalRdyCount but updateRDY refuses to
+	// change its RDY, so its budget cannot be reclaimed until it is removed.
+	Closing bool
+}
+
+// ConnStats returns per-connection RDY and in-flight counts for every nsqd
+// the consumer is currently connected to. It exists so callers can observe
+// how the MaxInFlight budget is distributed across connections (e.g. to spot
+// a single nsqd being under-provisioned with RDY relative to its peers).
+func (r *Consumer) ConnStats() []ConnStat {
+	conns := r.conns()
+	stats := make([]ConnStat, 0, len(conns))
+	for _, c := range conns {
+		stats = append(stats, ConnStat{
+			Address:  c.String(),
+			RDY:      c.RDY(),
+			InFlight: c.MessagesInFlight(),
+			Closing:  c.IsClosing(),
+		})
+	}
+	return stats
+}
+
 func (r *Consumer) conns() []*Conn {
 	r.mtx.RLock()
 	conns := make([]*Conn, 0, len(r.connections))
@@ -305,6 +335,14 @@ func (r *Consumer) IsStarved() bool {
 
 func (r *Consumer) getMaxInFlight() int32 {
 	return atomic.LoadInt32(&r.maxInFlight)
+}
+
+// TotalRDY returns the consumer's running total of RDY advertised across all
+// connections (the budget tracked against MaxInFlight). Comparing it to the sum
+// of per-connection RDY reveals budget leaked by connections that were removed
+// or are stuck closing without their RDY being reclaimed.
+func (r *Consumer) TotalRDY() int64 {
+	return atomic.LoadInt64(&r.totalRdyCount)
 }
 
 // ChangeMaxInFlight sets a new maximum number of messages this comsumer instance
