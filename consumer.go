@@ -205,6 +205,31 @@ func (r *Consumer) Stats() *ConsumerStats {
 	}
 }
 
+// ConnStat is a point-in-time view of a single nsqd connection's RDY and
+// in-flight counts, keyed by the nsqd address.
+type ConnStat struct {
+	Address  string
+	RDY      int64
+	InFlight int64
+}
+
+// ConnStats returns per-connection RDY and in-flight counts for every nsqd
+// the consumer is currently connected to. It exists so callers can observe
+// how the MaxInFlight budget is distributed across connections (e.g. to spot
+// a single nsqd being under-provisioned with RDY relative to its peers).
+func (r *Consumer) ConnStats() []ConnStat {
+	conns := r.conns()
+	stats := make([]ConnStat, 0, len(conns))
+	for _, c := range conns {
+		stats = append(stats, ConnStat{
+			Address:  c.String(),
+			RDY:      c.RDY(),
+			InFlight: c.MessagesInFlight(),
+		})
+	}
+	return stats
+}
+
 func (r *Consumer) conns() []*Conn {
 	r.mtx.RLock()
 	conns := make([]*Conn, 0, len(r.connections))
