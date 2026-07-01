@@ -954,9 +954,14 @@ func (r *Consumer) updateRDY(c *Conn, count int64) error {
 	}
 	r.rdyRetryMtx.Unlock()
 
+	// Always allow a lower because it only frees budget and never exceeds MaxInFlight.
+	rdyCount := c.RDY()
+	if count <= rdyCount {
+		return r.sendRDY(c, count)
+	}
+
 	// never exceed our global max in flight. truncate if possible.
 	// this could help a new connection get partial max-in-flight
-	rdyCount := c.RDY()
 	maxPossibleRdy := int64(r.getMaxInFlight()) - atomic.LoadInt64(&r.totalRdyCount) + rdyCount
 	if maxPossibleRdy > 0 && maxPossibleRdy < count {
 		count = maxPossibleRdy
